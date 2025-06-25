@@ -276,6 +276,40 @@ class LLM(RetryMixin, DebugMixin):
             # log the entire LLM prompt
             self.log_prompt(messages)
 
+            # 🔍 记录完整的LLM交互 - 请求部分
+            try:
+                import json
+                import os
+                from datetime import datetime
+                
+                log_dir = "/tmp/openhands_logs"
+                os.makedirs(log_dir, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                log_file = os.path.join(log_dir, f"llm_interaction_{timestamp}.json")
+                
+                # 记录请求信息
+                request_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "interaction_type": "LLM_REQUEST",
+                    "model": self.config.model,
+                    "total_messages": len(messages),
+                    "message_roles": [msg.get('role', 'unknown') for msg in messages],
+                    "messages": messages,
+                    "kwargs": {k: v for k, v in kwargs.items() if k not in ('messages', 'client', 'api_key')},
+                    "function_calling_active": self.is_function_calling_active(),
+                    "mock_function_calling": mock_function_calling
+                }
+                
+                # 临时保存请求数据，稍后会添加响应
+                self._current_request_log = {
+                    "log_file": log_file,
+                    "request_data": request_data
+                }
+                
+            except Exception as e:
+                logger.debug(f"Failed to log LLM request: {e}")
+
             # set litellm modify_params to the configured value
             # True by default to allow litellm to do transformations like adding a default message, when a message is empty
             # NOTE: this setting is global; unlike drop_params, it cannot be overridden in the litellm completion partial
@@ -338,6 +372,73 @@ class LLM(RetryMixin, DebugMixin):
 
             # log the LLM response
             self.log_response(message_back)
+
+            # 🔍 记录完整的LLM交互 - 响应部分
+            try:
+                if hasattr(self, '_current_request_log'):
+                    log_file = self._current_request_log["log_file"]
+                    request_data = self._current_request_log["request_data"]
+                    
+                    # 添加响应信息
+                    response_data = {
+                        "response_timestamp": datetime.now().isoformat(),
+                        "latency_seconds": latency,
+                        "response_id": response_id,
+                        "response_content": message_back,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "function_name": tc.function.name,
+                                "function_arguments": tc.function.arguments
+                            } for tc in tool_calls
+                        ] if tool_calls else [],
+                        "raw_response": {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "role": choice.message.role,
+                                        "content": choice.message.content,
+                                        "tool_calls": [
+                                            {
+                                                "id": tc.id,
+                                                "type": tc.type,
+                                                "function": {
+                                                    "name": tc.function.name,
+                                                    "arguments": tc.function.arguments
+                                                }
+                                            } for tc in (choice.message.tool_calls or [])
+                                        ] if choice.message.tool_calls else None
+                                    },
+                                    "finish_reason": choice.finish_reason
+                                } for choice in resp.choices
+                            ],
+                            "usage": {
+                                "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+                                "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
+                                "total_tokens": resp.usage.total_tokens if resp.usage else 0
+                            } if resp.usage else None
+                        }
+                    }
+                    
+                    # 合并请求和响应数据
+                    complete_interaction = {
+                        **request_data,
+                        "interaction_type": "COMPLETE_LLM_INTERACTION",
+                        "response": response_data
+                    }
+                    
+                    # 写入完整的交互日志
+                    with open(log_file, 'w', encoding='utf-8') as f:
+                        json.dump(complete_interaction, f, indent=2, ensure_ascii=False)
+                    
+                    logger.info(f"🔍 Complete LLM interaction logged to: {log_file}")
+                    print(f"🔍 Complete LLM interaction logged to: {log_file}")
+                    
+                    # 清理临时数据
+                    delattr(self, '_current_request_log')
+                    
+            except Exception as e:
+                logger.debug(f"Failed to log LLM response: {e}")
 
             # post-process the response first to calculate cost
             cost = self._post_completion(resp)

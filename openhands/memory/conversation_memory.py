@@ -147,6 +147,48 @@ class ConversationMemory:
         # Apply final formatting
         messages = self._apply_user_message_formatting(messages)
 
+        # Log messages for debugging - 记录真实的messages数组
+        try:
+            import json
+            import os
+            from datetime import datetime
+            
+            log_dir = "/tmp/openhands_logs"
+            os.makedirs(log_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 包含毫秒
+            log_file = os.path.join(log_dir, f"real_messages_{timestamp}.json")
+            
+            # Convert to serializable format
+            serializable_messages = []
+            for msg in messages:
+                msg_dict = msg.model_dump()
+                # 添加一些额外信息
+                msg_dict['_debug_info'] = {
+                    'contains_image': msg.contains_image,
+                    'content_count': len(msg.content),
+                    'content_types': [type(c).__name__ for c in msg.content]
+                }
+                serializable_messages.append(msg_dict)
+            
+            log_data = {
+                "timestamp": datetime.now().isoformat(),
+                "session_info": "Real OpenHands conversation messages",
+                "total_messages": len(messages),
+                "message_roles": [msg.role for msg in messages],
+                "role_distribution": {role: sum(1 for m in messages if m.role == role) for role in set(m.role for m in messages)},
+                "messages": serializable_messages
+            }
+            
+            with open(log_file, 'w', encoding='utf-8') as f:
+                json.dump(log_data, f, indent=2, ensure_ascii=False)
+                
+            logger.info(f"🔍 Real messages logged to: {log_file}")
+            print(f"🔍 Real OpenHands messages logged to: {log_file}")
+            
+        except Exception as e:
+            logger.debug(f"Failed to log messages: {e}")
+
         return messages
 
     def _apply_user_message_formatting(self, messages: list[Message]) -> list[Message]:
